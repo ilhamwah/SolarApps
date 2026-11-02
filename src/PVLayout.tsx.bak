@@ -1,0 +1,207 @@
+import { useMemo, useState } from "react";
+import { Download, Grid2X2, MousePointer2, RotateCcw, Trash2, WandSparkles } from "lucide-react";
+
+type Lang = "en" | "id";
+type Panel = { id: number; x: number; y: number; w: number; h: number };
+type SystemType = "Rooftop" | "Ground-mounted";
+
+const STORAGE_KEY = "solar-apps-pv-layout-v1";
+const defaults = {
+  system: "Rooftop" as SystemType,
+  areaWidth: 12000,
+  areaHeight: 8000,
+  moduleWidth: 2278,
+  moduleHeight: 1134,
+  gap: 20,
+  rows: 4,
+  cols: 8,
+  watts: 580,
+  tilt: 10,
+  orientation: "landscape" as "landscape" | "portrait",
+};
+
+function loadSaved(): { settings: typeof defaults; panels: Panel[] } | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.settings && Array.isArray(parsed?.panels)) return parsed;
+  } catch { /* ignore invalid local draft */ }
+  return null;
+}
+
+export default function PVLayout({ lang }: { lang: Lang }) {
+  const saved = useMemo(loadSaved, []);
+  const [settings, setSettings] = useState({ ...defaults, ...(saved?.settings ?? {}) });
+  const [panels, setPanels] = useState<Panel[]>(saved?.panels ?? []);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [notice, setNotice] = useState("");
+  const id = lang === "id";
+
+  const copy = id ? {
+    eyebrow: "EDITOR LAYOUT PV", title: "PV Layout 2D", subtitle: "Generate susunan modul otomatis, lalu rapikan secara manual di kanvas.",
+    system: "Jenis sistem", roof: "Rooftop / Atap", ground: "Ground-mounted / Lahan", area: "Batas area (mm)", width: "Lebar", height: "Panjang", module: "Spesifikasi modul", mw: "Lebar modul", mh: "Tinggi modul", gap: "Jarak antarmodul", watts: "Daya modul (Wp)", layout: "Susunan", rows: "Baris", cols: "Kolom", tilt: "Kemiringan (°)", orientation: "Orientasi modul", landscape: "Landscape", portrait: "Portrait", generate: "Generate otomatis", reset: "Reset layout", selected: "Panel dipilih", delete: "Hapus panel", hint: "Klik area kosong untuk menambah panel. Klik panel untuk memilih, lalu seret untuk memindahkan.", capacity: "Kapasitas DC", count: "Jumlah modul", used: "Area modul (perkiraan)", fit: "Status batas area", fits: "Layout masuk batas area", overflow: "Sebagian modul di luar batas", export: "Ekspor CSV", exportDxf: "Ekspor DXF", exportedDxf: "DXF layout diunduh.", saved: "Draft tersimpan di browser", empty: "Belum ada panel. Klik Generate otomatis untuk mulai.", canvas: "Kanvas desain", snap: "Koordinat dalam mm", confirmReset: "Layout direset.", generated: "Layout otomatis dibuat.", exported: "CSV layout diunduh.", manual: "Panel ditambahkan."
+  } : {
+    eyebrow: "PV LAYOUT EDITOR", title: "PV Layout 2D", subtitle: "Generate a module arrangement, then refine it manually on the canvas.",
+    system: "System type", roof: "Rooftop", ground: "Ground-mounted", area: "Site boundary (mm)", width: "Width", height: "Length", module: "Module specification", mw: "Module width", mh: "Module height", gap: "Module gap", watts: "Module power (Wp)", layout: "Array arrangement", rows: "Rows", cols: "Columns", tilt: "Tilt (°)", orientation: "Module orientation", landscape: "Landscape", portrait: "Portrait", generate: "Auto-generate", reset: "Reset layout", selected: "Selected panel", delete: "Delete panel", hint: "Click empty space to add a panel. Click a panel to select it, then drag to move.", capacity: "DC capacity", count: "Module count", used: "Approx. module area", fit: "Boundary check", fits: "Layout fits boundary", overflow: "Some modules are outside boundary", export: "Export CSV", exportDxf: "Export DXF", exportedDxf: "DXF layout downloaded.", saved: "Draft saved in this browser", empty: "No panels yet. Select Auto-generate to start.", canvas: "Design canvas", snap: "Coordinates in mm", confirmReset: "Layout reset.", generated: "Automatic layout generated.", exported: "Layout CSV downloaded.", manual: "Panel added."
+  };
+
+  const moduleW = settings.orientation === "landscape" ? settings.moduleWidth : settings.moduleHeight;
+  const moduleH = settings.orientation === "landscape" ? settings.moduleHeight : settings.moduleWidth;
+  const capacity = panels.length * settings.watts / 1000;
+  const moduleArea = panels.reduce((sum, p) => sum + p.w * p.h, 0) / 1_000_000;
+  const overflow = panels.some(p => p.x < 0 || p.y < 0 || p.x + p.w > settings.areaWidth || p.y + p.h > settings.areaHeight);
+  const selected = panels.find(p => p.id === selectedId) ?? null;
+
+  function update<K extends keyof typeof defaults>(key: K, value: (typeof defaults)[K]) {
+    setSettings(prev => ({ ...prev, [key]: value }));
+  }
+  function saveDraft(nextPanels = panels, nextSettings = settings) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings: nextSettings, panels: nextPanels })); } catch { /* browser storage may be disabled */ }
+  }
+  function generate() {
+    const rows = Math.max(1, Math.min(100, Math.floor(Number(settings.rows) || 1)));
+    const cols = Math.max(1, Math.min(100, Math.floor(Number(settings.cols) || 1)));
+    const totalW = cols * moduleW + (cols - 1) * settings.gap;
+    const totalH = rows * moduleH + (rows - 1) * settings.gap;
+    const startX = Math.max(0, (settings.areaWidth - totalW) / 2);
+    const startY = Math.max(0, (settings.areaHeight - totalH) / 2);
+    const next: Panel[] = [];
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) next.push({ id: Date.now() + r * cols + c, x: startX + c * (moduleW + settings.gap), y: startY + r * (moduleH + settings.gap), w: moduleW, h: moduleH });
+    setPanels(next); setSelectedId(null); saveDraft(next); setNotice(copy.generated);
+  }
+  function reset() { setPanels([]); setSelectedId(null); saveDraft([]); setNotice(copy.confirmReset); }
+  function pointFromEvent(event: React.PointerEvent<SVGSVGElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const sx = (event.clientX - rect.left) / rect.width * 1000;
+    const sy = (event.clientY - rect.top) / rect.height * 600;
+    return { x: (sx - originX) / scale, y: (sy - originY) / scale };
+  }
+  const scale = Math.min(840 / Math.max(settings.areaWidth, 1), 430 / Math.max(settings.areaHeight, 1));
+  const originX = (1000 - settings.areaWidth * scale) / 2;
+  const originY = (600 - settings.areaHeight * scale) / 2;
+
+  function canvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    if ((event.target as Element).closest("[data-panel]") ) return;
+    const p = pointFromEvent(event);
+    if (p.x < 0 || p.y < 0 || p.x > settings.areaWidth || p.y > settings.areaHeight) return;
+    const x = Math.max(0, Math.min(settings.areaWidth - moduleW, Math.round((p.x - moduleW / 2) / 50) * 50));
+    const y = Math.max(0, Math.min(settings.areaHeight - moduleH, Math.round((p.y - moduleH / 2) / 50) * 50));
+    const next = [...panels, { id: Date.now(), x, y, w: moduleW, h: moduleH }];
+    setPanels(next); setSelectedId(next[next.length - 1].id); saveDraft(next); setNotice(copy.manual);
+  }
+  function canvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (draggingId === null) return;
+    const p = pointFromEvent(event);
+    const next = panels.map(panel => panel.id === draggingId ? { ...panel, x: Math.max(0, Math.min(settings.areaWidth - panel.w, Math.round((p.x - panel.w / 2) / 50) * 50)), y: Math.max(0, Math.min(settings.areaHeight - panel.h, Math.round((p.y - panel.h / 2) / 50) * 50)) } : panel);
+    setPanels(next);
+    saveDraft(next);
+  }
+  function finishDrag() { setDraggingId(null); }
+  function deleteSelected() {
+    if (selectedId === null) return;
+    const next = panels.filter(p => p.id !== selectedId); setPanels(next); setSelectedId(null); saveDraft(next);
+  }
+  function exportCsv() {
+    const lines = [["Panel ID", "X (mm)", "Y (mm)", "Width (mm)", "Height (mm)", "Power (Wp)"] , ...panels.map((p, i) => [`PV-${String(i + 1).padStart(3, "0")}`, p.x, p.y, p.w, p.h, settings.watts])];
+    const csv = lines.map(row => row.map(v => `"${String(v).replaceAll('"', '""')}"`).join(",")).join("\r\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "solar-apps-pv-layout.csv"; a.click(); URL.revokeObjectURL(url); setNotice(copy.exported);
+  }
+  function exportDxf() {
+    // AutoCAD R12 ASCII DXF. All geometry is emitted in millimetres.
+    // Canvas Y grows downward; DXF coordinates are mapped to a bottom-left origin.
+    const pair = (code: number | string, value: number | string) => `${code}\r\n${value}\r\n`;
+    const entities: string[] = [];
+    const addLine = (x1: number, y1: number, x2: number, y2: number, layer: string) => {
+      entities.push(pair(0, "LINE"), pair(8, layer), pair(10, x1), pair(20, y1), pair(30, 0), pair(11, x2), pair(21, y2), pair(31, 0));
+    };
+    const addRect = (x: number, y: number, w: number, h: number, layer: string) => {
+      addLine(x, y, x + w, y, layer);
+      addLine(x + w, y, x + w, y + h, layer);
+      addLine(x + w, y + h, x, y + h, layer);
+      addLine(x, y + h, x, y, layer);
+    };
+    // Site boundary, origin at lower-left (0,0).
+    addRect(0, 0, settings.areaWidth, settings.areaHeight, "SITE_BOUNDARY");
+    panels.forEach((panel, index) => {
+      const x = panel.x;
+      const y = settings.areaHeight - panel.y - panel.h;
+      addRect(x, y, panel.w, panel.h, "PV_MODULES");
+      // Small panel ID text, useful in CAD; height scales with module size.
+      const textHeight = Math.max(40, Math.min(120, Math.min(panel.w, panel.h) / 8));
+      if (panel.w > textHeight * 2 && panel.h > textHeight * 1.5) {
+        entities.push(pair(0, "TEXT"), pair(8, "PANEL_ID"), pair(10, x + panel.w / 2 - textHeight), pair(20, y + panel.h / 2), pair(30, 0), pair(40, textHeight), pair(1, `PV-${String(index + 1).padStart(3, "0")}`), pair(50, 0));
+      }
+    });
+    const header = [
+      pair(0, "SECTION"), pair(2, "HEADER"),
+      pair(9, "$ACADVER"), pair(1, "AC1009"),
+      pair(9, "$INSBASE"), pair(10, 0), pair(20, 0), pair(30, 0),
+      pair(9, "$INSUNITS"), pair(70, 4), // 4 = millimetres
+      pair(0, "ENDSEC"),
+      pair(0, "SECTION"), pair(2, "TABLES"),
+      pair(0, "TABLE"), pair(2, "LAYER"), pair(70, 3),
+      pair(0, "LAYER"), pair(2, "SITE_BOUNDARY"), pair(70, 0), pair(62, 3), pair(6, "CONTINUOUS"),
+      pair(0, "LAYER"), pair(2, "PV_MODULES"), pair(70, 0), pair(62, 4), pair(6, "CONTINUOUS"),
+      pair(0, "LAYER"), pair(2, "PANEL_ID"), pair(70, 0), pair(62, 7), pair(6, "CONTINUOUS"),
+      pair(0, "ENDTAB"), pair(0, "ENDSEC"),
+      pair(0, "SECTION"), pair(2, "ENTITIES")
+    ].join("");
+    const footer = [pair(0, "ENDSEC"), pair(0, "EOF")].join("");
+    const dxf = header + entities.join("") + footer;
+    const blob = new Blob([dxf], { type: "application/dxf;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "solar-apps-pv-layout.dxf"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    setNotice(copy.exportedDxf);
+  }
+
+  return <section className="pv-layout-page">
+    <div className="pv-layout-heading"><div><div className="eyebrow"><span className="live-dot" />{copy.eyebrow}</div><h1>{copy.title}</h1><p>{copy.subtitle}</p></div><div className="pv-heading-actions"><button className="secondary-button" onClick={reset}><RotateCcw size={15} />{copy.reset}</button><button className="secondary-button" onClick={exportCsv} disabled={!panels.length}><Download size={15} />{copy.export}</button><button className="primary-button" onClick={exportDxf} disabled={!panels.length}><Download size={15} />{copy.exportDxf}</button></div></div>
+    <div className="pv-stat-grid">
+      <div className="pv-stat"><span>{copy.count}</span><strong>{panels.length.toLocaleString()}</strong><small>PV modules</small></div>
+      <div className="pv-stat"><span>{copy.capacity}</span><strong>{capacity.toLocaleString(undefined, { maximumFractionDigits: 2 })} <small>kWp</small></strong><small>{settings.watts} Wp × {panels.length}</small></div>
+      <div className="pv-stat"><span>{copy.used}</span><strong>{moduleArea.toLocaleString(undefined, { maximumFractionDigits: 2 })} <small>m²</small></strong><small>Panel area only</small></div>
+      <div className="pv-stat"><span>{copy.fit}</span><strong className={overflow ? "pv-warning" : "pv-good"}>{overflow ? "!" : "✓"} <small>{overflow ? copy.overflow : copy.fits}</small></strong><small>Geometric check only</small></div>
+    </div>
+    <div className="pv-workspace-grid">
+      <aside className="panel pv-controls">
+        <div className="pv-section-title"><Grid2X2 size={16} /><strong>{copy.system}</strong></div>
+        <select value={settings.system} onChange={e => update("system", e.target.value as SystemType)}><option value="Rooftop">{copy.roof}</option><option value="Ground-mounted">{copy.ground}</option></select>
+        <div className="pv-section-title"><strong>{copy.area}</strong></div>
+        <div className="pv-input-grid"><NumberField label={copy.width} value={settings.areaWidth} min={1000} step={100} onChange={v => update("areaWidth", v)} /><NumberField label={copy.height} value={settings.areaHeight} min={1000} step={100} onChange={v => update("areaHeight", v)} /></div>
+        <div className="pv-section-title"><strong>{copy.module}</strong></div>
+        <div className="pv-input-grid"><NumberField label={copy.mw} value={settings.moduleWidth} min={100} step={1} onChange={v => update("moduleWidth", v)} /><NumberField label={copy.mh} value={settings.moduleHeight} min={100} step={1} onChange={v => update("moduleHeight", v)} /><NumberField label={copy.gap} value={settings.gap} min={0} step={5} onChange={v => update("gap", v)} /><NumberField label={copy.watts} value={settings.watts} min={1} step={5} onChange={v => update("watts", v)} /></div>
+        <div className="pv-section-title"><strong>{copy.layout}</strong></div>
+        <div className="pv-input-grid"><NumberField label={copy.rows} value={settings.rows} min={1} max={100} step={1} onChange={v => update("rows", v)} /><NumberField label={copy.cols} value={settings.cols} min={1} max={100} step={1} onChange={v => update("cols", v)} /><NumberField label={copy.tilt} value={settings.tilt} min={0} max={60} step={1} onChange={v => update("tilt", v)} /></div>
+        <label className="pv-field"><span>{copy.orientation}</span><select value={settings.orientation} onChange={e => update("orientation", e.target.value as "landscape" | "portrait")}><option value="landscape">{copy.landscape}</option><option value="portrait">{copy.portrait}</option></select></label>
+        <button className="primary-button pv-generate" onClick={generate}><WandSparkles size={16} />{copy.generate}</button>
+        <div className="pv-selected-box"><span>{copy.selected}</span><strong>{selected ? `PV-${String(panels.findIndex(p => p.id === selectedId) + 1).padStart(3, "0")}` : "—"}</strong><button className="secondary-button" disabled={!selected} onClick={deleteSelected}><Trash2 size={14} />{copy.delete}</button></div>
+      </aside>
+      <div className="panel pv-canvas-panel">
+        <div className="pv-canvas-toolbar"><div><MousePointer2 size={15} /><strong>{copy.canvas}</strong><span className="pv-units">{copy.snap}</span></div><span>{settings.areaWidth.toLocaleString()} × {settings.areaHeight.toLocaleString()} mm</span></div>
+        <div className="pv-canvas-wrap"><svg className="pv-canvas" viewBox="0 0 1000 600" role="img" aria-label="Interactive photovoltaic panel layout canvas" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={finishDrag} onPointerLeave={finishDrag}>
+          <defs><pattern id="pv-grid-small" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#25322b" strokeWidth="0.7" /></pattern><pattern id="pv-grid-large" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#pv-grid-small)"/><path d="M 100 0 L 0 0 0 100" fill="none" stroke="#34463a" strokeWidth="1" /></pattern></defs>
+          <rect width="1000" height="600" fill="url(#pv-grid-large)" />
+          <rect x={originX} y={originY} width={settings.areaWidth * scale} height={settings.areaHeight * scale} fill="#14221a" fillOpacity=".65" stroke="#b8f36b" strokeWidth="2" strokeDasharray="8 4" />
+          {panels.map((panel, index) => <g key={panel.id} data-panel="true" onPointerDown={e => { e.stopPropagation(); setSelectedId(panel.id); setDraggingId(panel.id); (e.currentTarget as SVGGElement).ownerSVGElement?.setPointerCapture(e.pointerId); }} style={{ cursor: "move" }}>
+            <rect x={originX + panel.x * scale} y={originY + panel.y * scale} width={Math.max(1, panel.w * scale)} height={Math.max(1, panel.h * scale)} rx="2" fill={selectedId === panel.id ? "#c8ff8d" : "#438c64"} fillOpacity={selectedId === panel.id ? ".95" : ".88"} stroke={selectedId === panel.id ? "#efffd8" : "#8bd7a5"} strokeWidth={selectedId === panel.id ? 2 : 1} />
+            <path d={`M ${originX + panel.x * scale + panel.w * scale / 2} ${originY + panel.y * scale} V ${originY + (panel.y + panel.h) * scale}`} stroke="#173b2a" strokeWidth="1" />
+            <path d={`M ${originX + panel.x * scale} ${originY + panel.y * scale + panel.h * scale / 2} H ${originX + (panel.x + panel.w) * scale}`} stroke="#173b2a" strokeWidth="1" />
+            {panel.w * scale > 30 && panel.h * scale > 18 && <text x={originX + (panel.x + panel.w / 2) * scale} y={originY + (panel.y + panel.h / 2) * scale + 3} textAnchor="middle" fontSize="10" fill="#102217" fontWeight="700">{String(index + 1).padStart(2, "0")}</text>}
+          </g>)}
+          <text x={originX} y={Math.max(18, originY - 12)} fill="#b8f36b" fontSize="12">SITE BOUNDARY · {settings.system.toUpperCase()}</text>
+        </svg></div>
+        <div className="pv-canvas-footer"><span><i className="pv-legend-dot" /> {panels.length} modules</span><span>{copy.hint}</span></div>
+        {notice && <div className="pv-notice">{notice}</div>}
+        {!panels.length && <div className="pv-empty-note">{copy.empty}</div>}
+      </div>
+    </div>
+    <div className="pv-disclaimer">MVP geometry only: this layout does not yet account for roof obstacles, setbacks, row-to-row shading, wind/seismic loads, structural checks, electrical string limits, or code compliance. Validate designs with project-specific engineering requirements.</div>
+  </section>;
+}
+
+function NumberField({ label, value, min, max, step, onChange }: { label: string; value: number; min?: number; max?: number; step?: number; onChange: (value: number) => void }) {
+  return <label className="pv-field"><span>{label}</span><input type="number" value={value} min={min} max={max} step={step} onChange={e => onChange(Number(e.target.value))} /></label>;
+}
